@@ -9,6 +9,7 @@
 #include <Fonts\FreeSans24pt7b.h>
 #include <SimpleTimer.h>
 #include <ESP8266HTTPClient.h>
+//#include <Adafruit_PN532.h>
 #include <PN532_I2C.h>
 #include <PN532.h>
 #include <NfcAdapter.h>
@@ -16,7 +17,7 @@
 #define OLED_RESET 0 // not used
 #define LED D4
 #define UDP_PORT 1860
-#define ICON_UPDATE_BUFFER_LENGTH 5
+#define ICON_UPDATE_BUFFER_LENGTH (SSD1306_LCDWIDTH * SSD1306_LCDHEIGHT / 8)
 #define NFC_PIN D8
 
 //const char* ssid = "FRITZ!Box 6360 Cable";
@@ -30,11 +31,12 @@ Adafruit_SSD1306 display(OLED_RESET);
 WiFiUDP Udp;
 SimpleTimer transactionTimer;
 HTTPClient http;
-PN532_I2C pn532i2c(Wire);
-PN532 nfc(pn532i2c);
+//Adafruit_PN532 nfc(D6, D7);
+PN532_I2C pn532_i2c(Wire);
+PN532 nfc(pn532_i2c);
 
 char iconUpdateBuffer[ICON_UPDATE_BUFFER_LENGTH];
-boolean isCheckedIn;
+boolean isCheckedIn = false;
 
 void handleIconUpdate() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -44,7 +46,7 @@ void handleIconUpdate() {
       if (len > 0) {
         iconUpdateBuffer[len] = 0;
       }
-      Serial.printf("Icon update received: %s.\n", iconUpdateBuffer);
+      Serial.println("Icon update received.");
       showIcon(iconUpdateBuffer);
     }
   }
@@ -52,16 +54,22 @@ void handleIconUpdate() {
 
 void showIcon(String icon) {
   display.clearDisplay();
+/*
   display.setFont(&FreeSans24pt7b);
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(12, 48);
   display.print(icon);
+*/
+  display.drawBitmap(0, 0, (const unsigned char*) iconUpdateBuffer, 64, 64, WHITE);
   display.display();
 }
 
 void doTransaction(void) {
   digitalWrite(LED, LOW);
+  display.fillCircle(display.width() - 5, 5, 4, WHITE);
+  display.display();
+  
   if (WiFi.status() == WL_CONNECTED) {
     http.begin(transactionURL);
     int httpCode = http.GET();
@@ -75,6 +83,8 @@ void doTransaction(void) {
     delay(50);
   }
   digitalWrite(LED, HIGH);
+  display.fillCircle(display.width() - 5, 5, 4, BLACK);
+  display.display();
 }
 
 void checkinEvent(void) {
@@ -106,6 +116,13 @@ inline void setupDisplay(void) {
 
 inline void nfcOn(void) {
   digitalWrite(NFC_PIN, HIGH);
+  delay(20);
+  Wire.beginTransmission(0x48 >> 1);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("NFC found on I2C");
+  } else {
+    Serial.println("NFC not found on I2C");
+  }
 }
 
 inline void nfcOff() {
@@ -113,17 +130,18 @@ inline void nfcOff() {
 }
 
 inline void setupNfc(void) {
-  delay(500);
+  int version = 0;
   nfc.begin();
-  uint32_t versiondata = nfc.getFirmwareVersion();
-  if (! versiondata) {
-    Serial.print("Didn't find PN53x board");
-    while (1); // halt
+  version = nfc.getFirmwareVersion();
+  if (version == 0) {
+    Serial.println("Didn't find PN53x board");
+    nfcOff();
+    checkinEvent();
   } else {
     Serial.println("PN53x board found.");
+    nfc.SAMConfig();
+    nfc.setPassiveActivationRetries(16);
   }
-  nfc.SAMConfig();
-  nfc.setPassiveActivationRetries(16);
 }
 
 inline void setupWifi(void) {
@@ -168,22 +186,20 @@ void setup(void) {
     Serial.println("UDP server started");
   }
 
-  nfcOn();
-  setupNfc();
-  
   transactionTimer.setInterval(2000L, doTransaction);
   transactionTimer.disable(0);
+
+  nfcOn();
+  delay(500);
+  setupNfc();
 }
 
 void loop(void) {
-  if (analogRead(A0) < 800) {
-      ESP.deepSleep(10 * 1000000L, RF_DISABLED);
-  }
-  
   display.invertDisplay(isCheckedIn);
   if (!isCheckedIn) {
     displayLogo();
   }
+  
   boolean isCheckinEvent = false;
   while (nfc.inListPassiveTarget() == true) {
     isCheckinEvent = true;
